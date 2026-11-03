@@ -1,0 +1,117 @@
+rules_version = '2';
+// Reglas del restaurante. El correo del dueño se pone al compilar (scripts/preparar.mjs) desde src/cliente.json.
+// Dueño: todo. Meseros: toman pedidos y cobran. Cocina: ve los pedidos y cambia su estado.
+// Público: ve el menú, hace su pedido por enlace o QR y lo sigue con su código (no puede listar pedidos).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function conSesion() { return request.auth != null; }
+    function esAdmin() {
+      return conSesion() && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() == '__CORREO_ADMIN__';
+    }
+    function rutaUsuario() { return /databases/$(database)/documents/usuarios/$(request.auth.uid); }
+    function perfil() { return get(rutaUsuario()).data; }
+    function activo() { return conSesion() && exists(rutaUsuario()) && perfil().get('activo', true) == true; }
+    function esMesero() { return activo() && perfil().rol == 'mesero'; }
+    function esCocina() { return activo() && perfil().rol == 'cocina'; }
+    function esEquipo() { return esAdmin() || esMesero() || esCocina(); }
+    function rutaAjustes() { return /databases/$(database)/documents/ajustes/general; }
+    function ajuste(campo, porDefecto) { return !exists(rutaAjustes()) ? porDefecto : get(rutaAjustes()).data.get(campo, porDefecto); }
+    function texto(v, max) { return v is string && v.size() <= max; }
+
+    // Datos del restaurante: salen en el menú público.
+    match /ajustes/general {
+      allow get: if true;
+      allow list: if esEquipo();
+      allow write: if esAdmin();
+    }
+
+    // El menú lo ve cualquiera. Todo el equipo puede marcar un plato como agotado.
+    match /categorias/{id} {
+      allow read: if true;
+      allow write: if esAdmin();
+    }
+    match /platos/{id} {
+      allow read: if true;
+      allow create, delete: if esAdmin();
+      allow update: if esAdmin() || (esEquipo() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['disponible'])
+        && request.resource.data.disponible is bool);
+    }
+    match /fotos/{id} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if esAdmin();
+    }
+    match /mesas/{id} {
+      allow read: if true;
+      allow write: if esAdmin();
+    }
+
+    // Pedidos: el id es un código de 20 letras al azar, así el cliente sigue el suyo pero no puede ver los demás.
+    function pedidoValido(d) {
+      return d.keys().hasOnly(['tipo', 'mesaId', 'mesaNombre', 'cliente', 'items', 'subtotal', 'envio', 'total', 'nota',
+          'estado', 'origen', 'por', 'pagado', 'ventaId', 'creado', 'tiempos'])
+        && d.tipo in ['mesa', 'llevar', 'domicilio']
+        && d.items is list && d.items.size() >= 1 && d.items.size() <= 60
+        && d.subtotal is number && d.subtotal >= 0 && d.envio is number && d.envio >= 0
+        && d.total is number && d.total == d.subtotal + d.envio
+        && d.cliente is map && texto(d.cliente.get('nombre', ''), 80) && texto(d.cliente.get('telefono', ''), 30)
+        && texto(d.cliente.get('direccion', ''), 300) && texto(d.get('nota', ''), 300)
+        && d.pagado is bool;
+    }
+    function pedidoDelPublico(codigo, d) {
+      return codigo.size() == 20 && ajuste('pedidosEnLinea', true) == true
+        && d.estado == 'nuevo' && d.origen == 'enlace' && d.pagado == false && d.creado == request.time
+        && !d.keys().hasAny(['por', 'ventaId', 'tiempos'])
+        && (
+          (d.tipo == 'mesa' && d.mesaId is string && exists(/databases/$(database)/documents/mesas/$(d.mesaId)) && d.envio == 0)
+          || (d.tipo == 'llevar' && ajuste('llevar', true) == true && d.envio == 0 && d.cliente.nombre.size() > 0 && d.cliente.telefono.size() >= 8)
+          || (d.tipo == 'domicilio' && ajuste('domicilio', false) == true && d.envio == ajuste('costoDomicilio', 0)
+              && d.cliente.nombre.size() > 0 && d.cliente.telefono.size() >= 8 && d.cliente.get('direccion', '').size() > 0)
+        );
+    }
+    match /pedidos/{codigo} {
+      allow get: if true;
+      allow list: if esEquipo();
+      allow create: if pedidoValido(request.resource.data)
+        && ((esAdmin() || esMesero()) || pedidoDelPublico(codigo, request.resource.data));
+      allow update: if ((esAdmin() || esMesero()) && pedidoValido(request.resource.data))
+        || (esCocina() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado', 'tiempos'])
+            && request.resource.data.estado in ['aceptado', 'preparando', 'listo'])
+        // El cliente puede cancelar su pedido mientras nadie lo ha aceptado.
+        || (resource.data.estado == 'nuevo' && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado'])
+            && request.resource.data.estado == 'cancelado');
+      allow delete: if esAdmin();
+    }
+
+    // Ventas cobradas (caja). La cocina no las ve.
+    match /ventas/{id} {
+      allow read: if esAdmin() || esMesero();
+      allow create: if (esAdmin() || esMesero()) && request.resource.data.por == request.auth.uid
+        && request.resource.data.total is number && request.resource.data.fecha == request.time;
+      allow update, delete: if esAdmin();
+    }
+
+    // Invitaciones para meseros y cocina: el código es el id del documento. Solo se puede usar una vez.
+    match /invitaciones/{codigo} {
+      allow get: if conSesion();
+      allow list, create, delete: if esAdmin();
+      allow update: if esAdmin()
+        || (conSesion() && resource.data.usada == false
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usada', 'uid'])
+            && request.resource.data.usada == true && request.resource.data.uid == request.auth.uid
+            && getAfter(rutaUsuario()).data.codigo == codigo);
+    }
+
+    match /usuarios/{uid} {
+      allow read: if esEquipo() || (conSesion() && request.auth.uid == uid);
+      allow create: if conSesion() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['rol', 'codigo', 'nombre', 'correo', 'telefono', 'activo'])
+        && request.resource.data.activo == true
+        && get(/databases/$(database)/documents/invitaciones/$(request.resource.data.codigo)).data.usada == false
+        && request.resource.data.rol == get(/databases/$(database)/documents/invitaciones/$(request.resource.data.codigo)).data.get('rol', 'mesero')
+        && request.resource.data.rol in ['mesero', 'cocina'];
+      allow update, delete: if esAdmin();
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "nombreApp": "Restaurante Demo",
+  "nombreCorto": "Restaurante",
+  "descripcion": "Comida típica",
+  "ciudad": "Managua",
+  "nombreDueno": "Dueño Demo",
+  "correoAdmin": "correo-del-dueno@gmail.com",
+  "colorPrincipal": "#b9822a",
+  "colorAcento": "#2e7d5b",
+  "colorFondo": "#fbf6ee",
+  "plan": "spark",
+  "loginEnHosting": false,
+  "tipo": "restaurante",
+  "textos": {
+    "plato": "plato",
+    "platos": "platos",
+    "mesero": "mesero",
+    "meseros": "meseros",
+    "mesa": "mesa",
+    "mesas": "mesas"
+  },
+  "modulos": ["menu", "pedidos", "caja", "enlinea", "cocina"],
+  "venta": {
+    "moneda": "C$"
+  },
+  "firebase": {
+    "projectId": "id-del-proyecto",
+    "apiKey": "",
+    "appId": "",
+    "messagingSenderId": ""
+  }
+}

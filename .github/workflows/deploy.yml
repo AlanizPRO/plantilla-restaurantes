@@ -1,0 +1,38 @@
+# Publica la app en el Firebase del cliente (el projectId sale de src/cliente.json).
+# No publica nada hasta que el repositorio tenga la variable PUBLICAR_APP = si.
+# Necesita el secreto FIREBASE_SERVICE_ACCOUNT (cuenta "publicador" agregada como Editor en el proyecto del cliente).
+name: Publicar app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publicar-app
+  cancel-in-progress: true
+
+jobs:
+  publicar:
+    if: vars.PUBLICAR_APP == 'si'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Compilar la app
+        run: npm run build
+      - name: Publicar página, reglas e índices
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          PROYECTO=$(node -p "require('./src/cliente.json').firebase.projectId")
+          echo "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/cuenta.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/cuenta.json"
+          npx -y firebase-tools@latest deploy --only hosting,firestore --project "$PROYECTO" --non-interactive --force
+      - name: Borrar la clave temporal
+        if: always()
+        run: rm -f "$RUNNER_TEMP/cuenta.json"
